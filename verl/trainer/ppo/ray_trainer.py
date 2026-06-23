@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pprint import pprint
 from typing import Dict, Optional, Type
+import inspect
 
 import numpy as np
 import ray
@@ -60,6 +61,7 @@ from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seql
 from verl.utils.torch_functional import masked_mean
 from verl.utils.tracking import ValidationGenerationsLogger
 from verl.workers.rollout.async_server import AsyncLLMServerManager
+from functools import partial
 
 WorkerType = Type[Worker]
 
@@ -259,10 +261,11 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
             response_length = grpo_calculation_mask.size(1)  # Get length from the initial response mask
             grpo_calculation_mask = data.batch["loss_mask"][:, -response_length:]  # This mask is the one intended for GRPO
         # Call compute_grpo_outcome_advantage with parameters matching its definition
+        print("GROUPLESS:", kwargs.get("groupless", False))
         advantages, returns = core_algos.compute_grpo_outcome_advantage(
             token_level_rewards=data.batch["token_level_rewards"],
             response_mask=grpo_calculation_mask,
-            index=data.non_tensor_batch["uid"],
+            index=["group1"]*len(data.non_tensor_batch["uid"]) if kwargs.get("groupless", False) else data.non_tensor_batch["uid"],
             norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
         )
         data.batch["advantages"] = advantages
@@ -364,7 +367,11 @@ class RayPPOTrainer:
         self.processor = processor
         self.config = config
         self.reward_fn = reward_fn
+        print("VAL REWARD FN compute_score raw_fn", val_reward_fn.compute_score._raw_fn)
         self.val_reward_fn = val_reward_fn
+        if "val_mode" in inspect.signature(val_reward_fn.compute_score._raw_fn).parameters:
+            self.val_reward_fn.compute_score = partial(self.val_reward_fn.compute_score, val_mode=True)
+            print("SET VAL MODE TO TRUE")
 
         self.hybrid_engine = config.actor_rollout_ref.hybrid_engine
         assert self.hybrid_engine, "Currently, only support hybrid engine"
@@ -699,6 +706,7 @@ class RayPPOTrainer:
             test_batch = test_batch.union(test_output_gen_batch)
 
             # evaluate using reward_function
+            self.val_reward_fn.compute_score = partial(self.val_reward_fn.compute_score, grpo_step=self.global_steps)
             result = self.val_reward_fn(test_batch, return_dict=True)
             reward_tensor = result["reward_tensor"]
             scores = reward_tensor.sum(-1).cpu().tolist()
@@ -985,7 +993,7 @@ class RayPPOTrainer:
                 )
 
                 is_last_step = self.global_steps >= self.total_training_steps
-
+                self.reward_fn.compute_score = partial(self.reward_fn.compute_score, grpo_step=self.global_steps)
                 with _timer("step", timing_raw):
                     # generate a batch
                     with _timer("gen", timing_raw):
@@ -1122,6 +1130,7 @@ class RayPPOTrainer:
                             use_pf_ppo=self.config.algorithm.use_pf_ppo,
                             pf_ppo_reweight_method=self.config.algorithm.pf_ppo.reweight_method,
                             pf_ppo_weight_pow=self.config.algorithm.pf_ppo.weight_pow,
+                            groupless = self.config.algorithm.get("groupless_advantage", False),
                         )
 
                     # update critic

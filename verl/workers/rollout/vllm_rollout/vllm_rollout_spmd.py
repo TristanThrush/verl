@@ -28,6 +28,7 @@ When working with Megatron:
 
 import logging
 import os
+import uuid
 from contextlib import contextmanager
 from copy import deepcopy
 from typing import Any, Dict, List, Union
@@ -360,7 +361,12 @@ class vLLMRollout(BaseRollout):
         ):
             self.inference_engine.free_cache_engine()
 
-        return DataProto(batch=batch, non_tensor_batch=non_tensor_batch)
+        return_batch = DataProto(batch=batch, non_tensor_batch=non_tensor_batch)
+
+        save_rollout_batches_dir = self.config.get("save_rollout_batches_dir", None)
+        if save_rollout_batches_dir is not None:
+            return_batch.save_to_disk(f"{save_rollout_batches_dir}/{str(uuid.uuid4())}.pt")
+        return return_batch
 
 
 class vLLMAsyncRollout:

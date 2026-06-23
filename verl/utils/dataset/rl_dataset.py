@@ -283,6 +283,15 @@ class RLHFDataset(Dataset):
             logger.warning("tools_kwargs is empty for index {}, data source: {}", index, row_dict["data_source"])
         row_dict["index"] = index
         row_dict["tools_kwargs"] = tools_kwargs
+        prompt_ending_to_force_path = self.config.get("prompt_ending_to_force_path", None)
+        if prompt_ending_to_force_path is not None:
+            prompt_ending_to_force = open(prompt_ending_to_force_path, "r").read()
+            prompt_ending_tokens = self.tokenizer.encode(prompt_ending_to_force)
+            prompt_ending_tokens_tensor = torch.tensor(prompt_ending_tokens)
+            len_prompt_ending_tokens = len(prompt_ending_tokens)
+            row_dict["input_ids"][-len_prompt_ending_tokens:] = prompt_ending_tokens_tensor
+            row_dict["raw_prompt_ids"] = row_dict["raw_prompt_ids"][:-len_prompt_ending_tokens] + prompt_ending_tokens
+
         return row_dict
 
     def __getstate__(self):

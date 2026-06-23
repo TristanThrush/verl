@@ -54,6 +54,8 @@ def get_custom_reward_fn(config):
     def wrapped_fn(*args, **kwargs):
         return raw_fn(*args, **kwargs, **reward_kwargs)
 
+    wrapped_fn._raw_fn = raw_fn
+
     return wrapped_fn
 
 

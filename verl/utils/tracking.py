@@ -21,6 +21,14 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Dict, List, Union
 
+import torch.distributed as dist
+
+def get_rank() -> int:
+    if dist.is_available() and dist.is_initialized():
+        return dist.get_rank()
+    # single-process / not initialized → treat as rank 0
+    return 0
+
 
 class Tracking:
     """A unified tracking interface for logging experiment data to multiple backends.
@@ -49,9 +57,17 @@ class Tracking:
         self.logger = {}
 
         if "tracking" in default_backend or "wandb" in default_backend:
+            import os
             import wandb
 
-            wandb.init(project=project_name, name=experiment_name, config=config)
+            # Unique-per-launch, requeue-stable run id with a clean display name. A bare fixed id
+            # (name + rank) makes every re-run resume="allow" into the prior run, mixing/dropping
+            # the new run's data via wandb's monotonic-step rule. SLURM_JOB_ID is stable across a
+            # requeue (so resume still works) but unique across launches (a fresh launch's id never
+            # existed, so it just creates a new run). init_timeout raised from the 90s default so a
+            # transient wandb-backend slow window doesn't time out and crash the trainer (no retry here).
+            run_id = experiment_name + "_" + os.environ.get("SLURM_JOB_ID", "") + "_" + str(get_rank())
+            wandb.init(project=project_name, name=experiment_name, config=config, id=run_id, settings=wandb.Settings(init_timeout=600))
             self.logger["wandb"] = wandb
 
         if "mlflow" in default_backend:
@@ -272,7 +288,7 @@ class ValidationGenerationsLogger:
         import wandb
 
         # Create column names for all samples
-        columns = ["step"] + sum([[f"input_{i + 1}", f"output_{i + 1}", f"score_{i + 1}"] for i in range(len(samples))], [])
+        columns = ["step"] + sum([[f"input_{i + 1}", f"output_{i + 1}", f"score_{i + 1}"] for i in range(len(samples[:10]))], [])
 
         if not hasattr(self, "validation_table"):
             # Initialize the table on first call
@@ -285,13 +301,14 @@ class ValidationGenerationsLogger:
         # Add new row with all data
         row_data = []
         row_data.append(step)
-        for sample in samples:
+        for sample in samples[:10]:
             row_data.extend(sample)
 
         new_table.add_data(*row_data)
 
         # Update reference and log
         wandb.log({"val/generations": new_table}, step=step)
+        
         self.validation_table = new_table
 
     def log_generations_to_swanlab(self, samples, step):
